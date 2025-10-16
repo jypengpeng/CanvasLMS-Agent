@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+*.pyc
+*.pyo
+*.pyd
+
+# Envs
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Node
+node_modules/
+
+# Misc
+dist/
+build/
+*.log
+

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Canvas AI Chat Assistant</title>
+	<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
+	<style>
+		#chat { height: 60vh; overflow-y: auto; padding: 0.5rem; border: 1px solid #eee; border-radius: 8px; }
+		.msg { margin: 0.5rem 0; }
+		.msg.user { text-align: right; }
+		.msg.ai { text-align: left; }
+		.msg .bubble { display: inline-block; padding: 0.5rem 0.75rem; border-radius: 10px; max-width: 75%; }
+		.msg.user .bubble { background: #2563eb; color: #fff; }
+		.msg.ai .bubble { background: #f3f4f6; }
+	</style>
+</head>
+<body>
+	<main class="container">
+		<h2>Canvas AI Chat Assistant</h2>
+		<article>
+			<label>Canvas API Token
+				<input id="token" type="password" placeholder="粘贴你的 Canvas Token" />
+			</label>
+			<label>LLM Base URL
+				<input id="llmBaseURL" type="text" placeholder="如 https://api.openai-compatible.example/v1" />
+			</label>
+			<label>LLM API Key（仅用于后端调用）
+				<input id="llmApiKey" type="password" placeholder="后端会从请求头 X-LLM-KEY 读取（仅本地演示可选）" />
+			</label>
+			<button id="checkHealth" class="contrast">检查后端 /api/health</button>
+			<hr />
+			<div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; align-items: end;">
+				<label>选择工具
+					<select id="toolSelect">
+						<option value="list_my_courses">list_my_courses（列出课程）</option>
+						<option value="get_upcoming_assignments">get_upcoming_assignments（未截止作业）</option>
+						<option value="get_announcements">get_announcements（课程公告）</option>
+					</select>
+				</label>
+				<label>课程名称（可选，仅公告）
+					<input id="toolCourse" type="text" placeholder="例如：Calculus / 留空=全部课程" />
+				</label>
+				<div></div>
+				<button id="runToolBtn" class="secondary">运行工具测试（直连工具）</button>
+			</div>
+			<small>安全性：Token 仅存储于 sessionStorage，关闭标签页即清除。</small>
+		</article>
+
+		<article>
+			<div id="chat"></div>
+            <form id="form" style="margin-top: 0.5rem;">
+                <input id="question" type="text" placeholder="输入你的问题，例如：最近有什么作业要交？" required />
+                <button type="submit">发送</button>
+            </form>
+			<div id="status" role="status"></div>
+		</article>
+	</main>
+	<script>
+		const chat = document.getElementById('chat');
+		const form = document.getElementById('form');
+		const tokenInput = document.getElementById('token');
+		const qInput = document.getElementById('question');
+		const statusEl = document.getElementById('status');
+		const baseUrlInput = document.getElementById('llmBaseURL');
+		const llmKeyInput = document.getElementById('llmApiKey');
+		const checkBtn = document.getElementById('checkHealth');
+		const toolSelect = document.getElementById('toolSelect');
+		const toolCourseInput = document.getElementById('toolCourse');
+		const runToolBtn = document.getElementById('runToolBtn');
+
+		// 恢复 sessionStorage
+		tokenInput.value = sessionStorage.getItem('canvas_token') || '';
+		baseUrlInput.value = sessionStorage.getItem('llm_base_url') || '';
+		llmKeyInput.value = sessionStorage.getItem('llm_api_key') || '';
+
+		function saveSession() {
+			sessionStorage.setItem('canvas_token', tokenInput.value.trim());
+			sessionStorage.setItem('llm_base_url', baseUrlInput.value.trim());
+			sessionStorage.setItem('llm_api_key', llmKeyInput.value.trim());
+		}
+
+		function appendMsg(role, text) {
+			const div = document.createElement('div');
+			div.className = `msg ${role}`;
+			const bubble = document.createElement('div');
+			bubble.className = 'bubble';
+			bubble.textContent = text;
+			div.appendChild(bubble);
+			chat.appendChild(div);
+			chat.scrollTop = chat.scrollHeight;
+		}
+
+		checkBtn.addEventListener('click', async () => {
+			try {
+				const resp = await fetch('/api/health');
+				const data = await resp.json();
+				appendMsg('ai', '健康检查：' + JSON.stringify(data));
+			} catch (e) {
+				appendMsg('ai', '健康检查失败：' + (e.message || String(e)));
+			}
+		});
+
+		runToolBtn.addEventListener('click', async () => {
+			try {
+				saveSession();
+				const token = tokenInput.value.trim();
+				if (!token) {
+					appendMsg('ai', '请先填写 Canvas Token');
+					return;
+				}
+				statusEl.textContent = '调用工具中…';
+				const body = { tool: toolSelect.value, canvas_token: token };
+				if (toolSelect.value === 'get_announcements') {
+					const name = (toolCourseInput.value || '').trim();
+					if (name) body['course_name'] = name;
+				}
+				const resp = await fetch('/api/tool_test', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(body)
+				});
+				if (!resp.ok) {
+					const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+					throw new Error(err.detail || '请求失败');
+				}
+				const data = await resp.json();
+				appendMsg('ai', data.result || '（无内容）');
+			} catch (e) {
+				appendMsg('ai', '工具调用错误：' + (e.message || String(e)));
+			} finally {
+				statusEl.textContent = '';
+			}
+		});
+
+		form.addEventListener('submit', async (e) => {
+			e.preventDefault();
+			saveSession();
+			const token = tokenInput.value.trim();
+			const message = qInput.value.trim();
+			if (!message) { return; }
+			if (!token) {
+				appendMsg('ai', '请先设置 Canvas API Token 再发起请求。');
+				return;
+			}
+
+			appendMsg('user', message);
+			qInput.value = '';
+			statusEl.textContent = '思考中…';
+
+			try {
+				const headers = { 'Content-Type': 'application/json' };
+				// 可选：将 LLM 配置透传给后端（示例性做法，用于快速演示；生产应配置在服务器）
+				if (baseUrlInput.value) headers['X-LLM-BASE'] = baseUrlInput.value;
+				if (llmKeyInput.value) headers['X-LLM-KEY'] = llmKeyInput.value;
+
+                const resp = await fetch('/api/chat', {
+					method: 'POST',
+					headers,
+					body: JSON.stringify({ message, canvas_token: token })
+				});
+				if (!resp.ok) {
+					const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+					throw new Error(err.detail || '请求失败');
+				}
+				const data = await resp.json();
+				appendMsg('ai', data.answer || '（无内容）');
+			} catch (err) {
+				appendMsg('ai', '错误：' + (err.message || String(err)));
+			} finally {
+				statusEl.textContent = '';
+			}
+		});
+	</script>
+</body>
+</html>
