@@ -4,58 +4,130 @@
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>Canvas AI Chat Assistant</title>
-	<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" />
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+	<script>
+		tailwind.config = {
+			theme: {
+				extend: {},
+				fontFamily: {
+					sans: ['Inter','ui-sans-serif','system-ui','-apple-system','Segoe UI','Roboto','Noto Sans','Helvetica Neue','Arial','Apple Color Emoji','Segoe UI Emoji','Segoe UI Symbol']
+				}
+			}
+		}
+	</script>
+	<script src="https://cdn.tailwindcss.com"></script>
+	<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 	<style>
-		#chat { height: 60vh; overflow-y: auto; padding: 0.5rem; border: 1px solid #eee; border-radius: 8px; }
-		.msg { margin: 0.5rem 0; }
-		.msg.user { text-align: right; }
-		.msg.ai { text-align: left; }
-		.msg .bubble { display: inline-block; padding: 0.5rem 0.75rem; border-radius: 10px; max-width: 75%; }
-		.msg.user .bubble { background: #2563eb; color: #fff; }
-		.msg.ai .bubble { background: #f3f4f6; }
+		body { font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', 'Helvetica Neue', Arial, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol' !important; background-color: #f9fafb !important; color: #000 !important; }
+		h1, h2, h3, h4, h5, h6 { color: #000 !important; }
+
+		/* Markdown 样式（4/8pt 间距系统；仅黑/白文本） */
+		.bubble .markdown-body { line-height: 1.5; }
+		.bubble .markdown-body p { margin: 8px 0; }
+		.bubble .markdown-body ul, .bubble .markdown-body ol { margin: 8px 0; padding-left: 20px; }
+		.bubble .markdown-body li { margin: 4px 0; }
+		.bubble .markdown-body h1 { font-size: 24px; font-weight: 700; margin: 8px 0; }
+		.bubble .markdown-body h2 { font-size: 20px; font-weight: 600; margin: 8px 0; }
+		.bubble .markdown-body h3 { font-size: 18px; font-weight: 600; margin: 8px 0; }
+		.bubble .markdown-body blockquote { border-left: 4px solid currentColor; padding-left: 12px; margin: 8px 0; opacity: 0.9; }
+		.bubble .markdown-body a { text-decoration: underline; }
+		/* 代码样式（浅/深气泡区分） */
+		.bubble .markdown-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 0.875rem; padding: 4px 4px; border-radius: 3px; border: 1px solid transparent; }
+		.bubble .markdown-body pre { margin: 8px 0; padding: 8px 16px; border-radius: 3px; overflow-x: auto; border: 1px solid transparent; }
+		/* AI（浅色气泡） */
+		.bubble-ai .markdown-body { color: #000; }
+		.bubble-ai .markdown-body code { background: #f3f4f6; color: #000; border-color: #e5e7eb; }
+		.bubble-ai .markdown-body pre { background: #f3f4f6; color: #000; border-color: #e5e7eb; }
+		/* 用户（深色气泡） */
+		.bubble-user .markdown-body { color: #fff; }
+		.bubble-user .markdown-body a { color: #fff; }
+		.bubble-user .markdown-body code { background: rgba(255,255,255,0.12); color: #fff; border-color: rgba(255,255,255,0.2); }
+		.bubble-user .markdown-body pre { background: #0f0f0f; color: #fff; border-color: #222; }
 	</style>
 </head>
-<body>
-	<main class="container">
-		<h2>Canvas AI Chat Assistant</h2>
-		<article>
-			<label>Canvas API Token
-				<input id="token" type="password" placeholder="粘贴你的 Canvas Token" />
-			</label>
-			<label>LLM Base URL
-				<input id="llmBaseURL" type="text" placeholder="如 https://api.openai-compatible.example/v1" />
-			</label>
-			<label>LLM API Key（仅用于后端调用）
-				<input id="llmApiKey" type="password" placeholder="后端会从请求头 X-LLM-KEY 读取（仅本地演示可选）" />
-			</label>
-			<button id="checkHealth" class="contrast">检查后端 /api/health</button>
-			<hr />
-			<div style="display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 0.5rem; align-items: end;">
-				<label>选择工具
-					<select id="toolSelect">
-						<option value="list_my_courses">list_my_courses（列出课程）</option>
-						<option value="get_upcoming_assignments">get_upcoming_assignments（未截止作业）</option>
-						<option value="get_announcements">get_announcements（课程公告）</option>
-					</select>
-				</label>
-				<label>课程名称（可选，仅公告）
-					<input id="toolCourse" type="text" placeholder="例如：Calculus / 留空=全部课程" />
-				</label>
-				<div></div>
-				<button id="runToolBtn" class="secondary">运行工具测试（直连工具）</button>
+<body class="antialiased">
+	<!-- 顶部导航 -->
+	<nav class="sticky top-0 z-10 bg-white border-b border-gray-200/80">
+		<div class="max-w-6xl mx-auto px-4">
+			<div class="h-14 flex items-center justify-between">
+				<div class="flex items-center gap-2">
+					<i data-lucide="message-square" class="w-5 h-5"></i>
+					<span class="text-xl font-semibold tracking-tight">Canvas 助手</span>
+				</div>
+				<div class="hidden sm:flex items-center gap-3">
+					<button id="checkHealth" class="px-3 py-2 rounded-[3px] bg-black text-white text-sm transition-colors hover:bg-neutral-900">检查后端 /api/health</button>
+				</div>
 			</div>
-			<small>安全性：Token 仅存储于 sessionStorage，关闭标签页即清除。</small>
-		</article>
+		</div>
+	</nav>
 
-		<article>
-			<div id="chat"></div>
-            <form id="form" style="margin-top: 0.5rem;">
-                <input id="question" type="text" placeholder="输入你的问题，例如：最近有什么作业要交？" required />
-                <button type="submit">发送</button>
-            </form>
-			<div id="status" role="status"></div>
-		</article>
+	<!-- 主体布局 -->
+	<main class="max-w-6xl mx-auto px-4 py-6">
+		<div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+			<!-- 侧栏：连接设置与工具测试 -->
+			<aside class="lg:col-span-4 space-y-6">
+				<section class="bg-white rounded-[3px] shadow-sm border border-gray-200">
+					<div class="p-4 space-y-3">
+						<h2 class="text-lg font-semibold">连接设置</h2>
+						<label class="block">
+							<span class="text-sm font-medium">Canvas API Token</span>
+							<input id="token" type="password" placeholder="粘贴你的 Canvas Token" class="mt-2 w-full h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800" />
+						</label>
+						<label class="block">
+							<span class="text-sm font-medium">LLM Base URL</span>
+							<input id="llmBaseURL" type="text" placeholder="如 https://api.openai-compatible.example/v1" class="mt-2 w-full h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800" />
+						</label>
+						<label class="block">
+							<span class="text-sm font-medium">LLM API Key（仅用于后端调用）</span>
+							<input id="llmApiKey" type="password" placeholder="后端会从请求头 X-LLM-KEY 读取（仅本地演示可选）" class="mt-2 w-full h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800" />
+						</label>
+						<p class="text-xs text-gray-600">安全性：Token 仅存储于 sessionStorage，关闭标签页即清除。</p>
+					</div>
+				</section>
+
+				<section class="bg-white rounded-[3px] shadow-sm border border-gray-200">
+					<div class="p-4 space-y-3">
+						<h3 class="text-base font-medium">工具测试</h3>
+						<label class="block">
+							<span class="text-sm font-medium">选择工具</span>
+							<select id="toolSelect" class="mt-2 w-full h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800">
+								<option value="list_my_courses">list_my_courses（列出课程）</option>
+								<option value="get_upcoming_assignments">get_upcoming_assignments（未截止作业）</option>
+								<option value="get_announcements">get_announcements（课程公告）</option>
+							</select>
+						</label>
+						<label class="block">
+							<span class="text-sm font-medium">课程名称（可选，仅公告）</span>
+							<input id="toolCourse" type="text" placeholder="例如：Calculus / 留空=全部课程" class="mt-2 w-full h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800" />
+						</label>
+						<div class="pt-1">
+							<button id="runToolBtn" class="w-full px-3 py-2 rounded-[3px] bg-black text-white text-sm transition-colors hover:bg-neutral-900">运行工具测试（直连工具）</button>
+						</div>
+					</div>
+				</section>
+			</aside>
+
+			<!-- 主内容：聊天 -->
+			<section class="lg:col-span-8 bg-white rounded-[3px] shadow-sm border border-gray-200">
+				<div class="p-4 border-b border-gray-200">
+					<h2 class="text-lg font-semibold">对话</h2>
+				</div>
+				<div class="p-4">
+					<div id="chat" class="h-[60vh] overflow-y-auto p-3 space-y-2 bg-white"></div>
+					<form id="form" class="mt-2 flex items-center gap-2">
+						<input id="question" type="text" placeholder="输入你的问题，例如：最近有什么作业要交？" required class="flex-1 h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800" />
+						<button type="submit" class="px-3 py-2 rounded-[3px] bg-black text-white text-sm transition-colors hover:bg-neutral-900">发送</button>
+					</form>
+					<div id="status" role="status" class="mt-2 text-sm text-gray-600"></div>
+				</div>
+			</section>
+		</div>
 	</main>
+
 	<script>
 		const chat = document.getElementById('chat');
 		const form = document.getElementById('form');
@@ -81,13 +153,30 @@
 		}
 
 		function appendMsg(role, text) {
-			const div = document.createElement('div');
-			div.className = `msg ${role}`;
+			const row = document.createElement('div');
+			row.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start');
 			const bubble = document.createElement('div');
-			bubble.className = 'bubble';
-			bubble.textContent = text;
-			div.appendChild(bubble);
-			chat.appendChild(div);
+			const baseBubble = 'bubble inline-block px-3 py-2 rounded-[3px] max-w-[75%] text-sm leading-6';
+			const bubbleRole = role === 'user' ? 'bubble-user bg-black text-white' : 'bubble-ai bg-gray-100 text-black';
+			bubble.className = baseBubble + ' ' + bubbleRole;
+			// Markdown 渲染 + XSS 处理
+			let html = text;
+			try {
+				if (window.marked && window.DOMPurify) {
+					const raw = window.marked.parse(String(text || ''));
+					html = window.DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
+				} else {
+					html = String(text || '');
+				}
+			} catch (_) {
+				html = String(text || '');
+			}
+			const wrapper = document.createElement('div');
+			wrapper.className = 'markdown-body';
+			wrapper.innerHTML = html;
+			bubble.appendChild(wrapper);
+			row.appendChild(bubble);
+			chat.appendChild(row);
 			chat.scrollTop = chat.scrollHeight;
 		}
 
@@ -154,7 +243,7 @@
 				if (baseUrlInput.value) headers['X-LLM-BASE'] = baseUrlInput.value;
 				if (llmKeyInput.value) headers['X-LLM-KEY'] = llmKeyInput.value;
 
-                const resp = await fetch('/api/chat', {
+				const resp = await fetch('/api/chat', {
 					method: 'POST',
 					headers,
 					body: JSON.stringify({ message, canvas_token: token })
@@ -171,6 +260,10 @@
 				statusEl.textContent = '';
 			}
 		});
+
+		// 图标渲染
+		if (window.lucide) { window.lucide.createIcons(); }
 	</script>
+	<script src="https://cdn.jsdelivr.net/npm/flowbite@2.0.0/dist/flowbite.min.js"></script>
 </body>
 </html>

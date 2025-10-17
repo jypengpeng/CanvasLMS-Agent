@@ -1,4 +1,4 @@
-# Canvas AI Chat Assistant
+# CanvasLMS-Agent
 
 一个基于 FastAPI + LangChain 的极简 Web 应用。前端输入 Canvas API Token，后端由 LangChain Agent 调用 Canvas 工具，帮你查询学业信息（DDL、课程、公告），并用中文总结回复。
 
