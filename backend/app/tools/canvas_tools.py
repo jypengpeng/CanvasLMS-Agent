@@ -3,7 +3,7 @@ import time
 import logging
 import requests
 from datetime import datetime, timezone
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple, Dict, Any
 from pydantic import BaseModel, Field
 from langchain.tools import StructuredTool, Tool
 
@@ -94,17 +94,23 @@ def _format_time(dt: Optional[datetime]) -> str:
 
 
 def list_my_courses_func(client: CanvasClient) -> str:
-	courses = []
-	for c in client.paginate("/courses", params={"enrollment_state": "active"}):
-		# 跳过没有 id 或 name 的条目
-		if not c.get("id") or not c.get("name"):
-			continue
-		courses.append((c["name"], c["id"]))
-	if not courses:
-		return "未找到任何在读课程。"
-	courses.sort(key=lambda x: x[0])
-	lines = [f"课程: {name} | id: {cid}" for name, cid in courses]
-	return "\n".join(lines)
+    courses = []
+    for c in client.paginate("/courses", params={"enrollment_state": "active"}):
+        # 跳过没有 id 或 name 的条目
+        if not c.get("id") or not c.get("name"):
+            continue
+        code = c.get("course_code") or c.get("code") or ""
+        courses.append((c["name"], c["id"], code))
+    if not courses:
+        return "未找到任何在读课程。"
+    courses.sort(key=lambda x: x[0])
+    lines = []
+    for name, cid, code in courses:
+        if code:
+            lines.append(f"课程: {name} | 代码: {code} | id: {cid}")
+        else:
+            lines.append(f"课程: {name} | id: {cid}")
+    return "\n".join(lines)
 
 
 def get_upcoming_assignments_func(client: CanvasClient) -> str:
@@ -133,14 +139,63 @@ def get_upcoming_assignments_func(client: CanvasClient) -> str:
 
 
 def _find_course_ids_by_name(client: CanvasClient, course_name: str) -> List[int]:
-	results: List[int] = []
-	target = course_name.strip().lower()
-	for c in client.paginate("/courses", params={"enrollment_state": "active"}):
-		name = str(c.get("name", "")).lower()
-		if target == name or target in name:
-			if c.get("id"):
-				results.append(int(c["id"]))
-	return results
+    results: List[int] = []
+    target = course_name.strip().lower()
+    for c in client.paginate("/courses", params={"enrollment_state": "active"}):
+        name = str(c.get("name", "")).lower()
+        if target == name or target in name:
+            if c.get("id"):
+                results.append(int(c["id"]))
+    return results
+
+
+def _find_course_ids_by_hint(client: CanvasClient, hint_raw: str) -> List[int]:
+    """根据用户提供的 hint（课程标题、课程代码如 SDSC5003，或代码后缀如 5003）查找课程ID。
+    匹配优先级：course_code 完整匹配 > 代码后缀匹配 > 名称包含。
+    """
+    if not hint_raw:
+        return []
+    hint = hint_raw.strip()
+    lowered = hint.lower()
+
+    # 采集必要字段
+    items: List[Tuple[int, str, str, str]] = []  # (id, name, course_code, short_suffix)
+    for c in client.paginate("/courses", params={"enrollment_state": "active"}):
+        cid = c.get("id")
+        if not cid:
+            continue
+        name = str(c.get("name") or "")
+        code = str(c.get("course_code") or c.get("code") or "")
+        suffix = ""
+        # 提取 code 中的数字后缀（如 SDSC5003 -> 5003）
+        if code:
+            m = re.search(r"(\d{3,6})$", code)
+            if m:
+                suffix = m.group(1)
+        items.append((int(cid), name, code, suffix))
+
+    # 1) 完整匹配 course_code（不区分大小写）
+    exact: List[int] = [cid for cid, _n, code, _suf in items if code and code.lower() == lowered]
+    if exact:
+        return exact
+
+    # 2) 若 hint 是纯数字，优先按代码后缀匹配（避免将 5003 当作课程ID）
+    if hint.isdigit():
+        tail: List[int] = [cid for cid, _n, _c, suf in items if suf and suf == hint]
+        if tail:
+            return tail
+
+    # 3) 名称包含匹配
+    name_hits: List[int] = [cid for cid, name, _c, _s in items if lowered in name.lower()]
+    if name_hits:
+        return name_hits
+
+    # 4) 回退：如果是数字且前述都没有，允许将其当作课程ID尝试（但最后才用）
+    try:
+        num = int(hint)
+        return [num]
+    except Exception:
+        return []
 
 
 def _strip_html(html: str, max_len: int = 240) -> str:
@@ -155,7 +210,8 @@ def _strip_html(html: str, max_len: int = 240) -> str:
 def get_announcements_func(client: CanvasClient, course_name: Optional[str]) -> str:
 	context_codes: List[str] = []
 	if course_name:
-		ids = _find_course_ids_by_name(client, course_name)
+		# 兼容名称 / 课程代码 / 数字后缀
+		ids = _find_course_ids_by_hint(client, course_name)
 		if not ids:
 			return f"未找到匹配课程: {course_name}"
 		context_codes = [f"course_{cid}" for cid in ids]
@@ -241,7 +297,43 @@ def build_canvas_tools(canvas_token: str, canvas_base_url: str, request_id: Opti
 		pass
 
 	class _AnnouncementsInput(BaseModel):
-		course_name: Optional[str] = Field(None, description="课程名称，留空查询全部")
+		course_name: Optional[str] = Field(None, description="课程名称/课程代码/数字后缀，留空查询全部")
+
+	class _BrowseFilesInput(BaseModel):
+		course_id: Optional[int] = Field(None, description="课程ID（仅在你明确知道是ID时使用）")
+		course_name: Optional[str] = Field(None, description="课程名称，可用英文/中文部分匹配")
+		course_hint: Optional[str] = Field(None, description="更通用的课程线索：课程代码（如 SDSC5003）或数字后缀（如 5003）")
+
+	def browse_course_files_wrapper(course_id: Optional[int] = None, course_name: Optional[str] = None, course_hint: Optional[str] = None) -> str:
+		start = time.monotonic()
+		resolved_id: Optional[int] = None
+		try:
+			logger.info("[ToolFn] browse_course_files.start args=%s req_id=%s", {"course_id": course_id, "course_name": course_name, "course_hint": course_hint}, client.request_id)
+			if course_id:
+				resolved_id = int(course_id)
+			else:
+				# 优先使用通用 hint；其次 course_name
+				hint = (course_hint or course_name or "").strip()
+				if not hint:
+					return "请提供 course_id 或 course_name/course_hint"
+				ids = _find_course_ids_by_hint(client, hint)
+				if not ids:
+					return f"未找到匹配课程: {hint}"
+				if len(ids) > 1:
+					# 返回候选列表，请用户指定
+					cands = ", ".join([str(i) for i in ids[:10]])
+					return f"找到多门匹配课程，请指定课程ID后再试。候选ID: {cands}…"
+				resolved_id = int(ids[0])
+			# 返回前端 UI 指令：仅当解析出唯一课程ID时（卡片形式，前端解析后插入到对话）
+			directive = f"__UI_FILE_BROWSER_CARD__{{\"courseId\": {resolved_id}}}__"
+			logger.info("[ToolFn] browse_course_files.directive=%s req_id=%s", directive, client.request_id)
+			return directive
+		except Exception as e:
+			logger.exception("[ToolFn] browse_course_files error=%s req_id=%s", str(e), client.request_id)
+			raise
+		finally:
+			elapsed_ms = int((time.monotonic() - start) * 1000)
+			logger.info("[ToolFn] browse_course_files end elapsedMs=%d req_id=%s", elapsed_ms, client.request_id)
 
 	tools = [
 		StructuredTool.from_function(
@@ -263,10 +355,18 @@ def build_canvas_tools(canvas_token: str, canvas_base_url: str, request_id: Opti
 		StructuredTool.from_function(
 			name="get_announcements",
 			description=(
-				"查询课程公告。输入为课程名称字符串或留空以查询全部。"
+				"查询课程公告。输入可为课程名称/课程代码/数字后缀，或留空以查询全部。"
 			),
 			func=get_announcements_wrapper,
 			args_schema=_AnnouncementsInput,
+		),
+		StructuredTool.from_function(
+			name="browse_course_files",
+			description=(
+				"当用户想要以文件树方式浏览课程文件并进行下载时调用。输入可为 course_id，或课程名称/课程代码/数字后缀（如 5003）。若匹配多门课会返回候选并要求指定。重要：工具将返回一个 UI 指令字符串（以 __UI_FILE_BROWSER_CARD__ 开头），你必须在最终回答中原样包含该字符串，且不要改动其任何字符。"
+			),
+			func=browse_course_files_wrapper,
+			args_schema=_BrowseFilesInput,
 		),
 	]
 

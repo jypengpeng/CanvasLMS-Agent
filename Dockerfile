@@ -5,6 +5,10 @@ WORKDIR /app
 
 # 安装依赖
 COPY requirements.txt ./
+# 关闭可能存在的哈希强制（部分企业/基础镜像会开启），并升级 pip
+RUN python -m pip install --upgrade pip \
+ && pip config set global.require-hashes false || true
+ENV PIP_REQUIRE_HASHES=0
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制代码

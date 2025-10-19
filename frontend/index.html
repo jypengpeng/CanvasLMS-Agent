@@ -68,8 +68,8 @@
 	<!-- 主体布局 -->
 	<main class="max-w-6xl mx-auto px-4 py-6">
 		<div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-			<!-- 侧栏：连接设置与工具测试 -->
-			<aside class="lg:col-span-4 space-y-6">
+            <!-- 侧栏：连接设置 / 工具测试 / 文件浏览 -->
+            <aside class="lg:col-span-4 space-y-6">
 				<section class="bg-white rounded-[3px] shadow-sm border border-gray-200">
 					<div class="p-4 space-y-3">
 						<h2 class="text-lg font-semibold">连接设置</h2>
@@ -89,7 +89,7 @@
 					</div>
 				</section>
 
-				<section class="bg-white rounded-[3px] shadow-sm border border-gray-200">
+                <section class="bg-white rounded-[3px] shadow-sm border border-gray-200">
 					<div class="p-4 space-y-3">
 						<h3 class="text-base font-medium">工具测试</h3>
 						<label class="block">
@@ -109,6 +109,20 @@
 						</div>
 					</div>
 				</section>
+
+                <section id="fileBrowserSection" class="bg-white rounded-[3px] shadow-sm border border-gray-200 hidden">
+                    <div class="p-4 space-y-3">
+                        <h3 class="text-base font-medium">课程文件浏览</h3>
+                        <label class="block">
+                            <span class="text-sm font-medium">课程 ID</span>
+                            <input id="courseIdInput" type="number" inputmode="numeric" placeholder="填写课程 ID（可先用课程列表工具获取）" class="mt-2 w-full h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800" />
+                        </label>
+                        <div class="pt-1">
+                            <button id="loadTreeBtn" class="w-full px-3 py-2 rounded-[3px] bg-black text-white text-sm transition-colors hover:bg-neutral-900">加载文件树</button>
+                        </div>
+                        <div id="fileTree" class="mt-2 text-sm"></div>
+                    </div>
+                </section>
 			</aside>
 
 			<!-- 主内容：聊天 -->
@@ -118,6 +132,21 @@
 				</div>
 				<div class="p-4">
 					<div id="chat" class="h-[60vh] overflow-y-auto p-3 space-y-2 bg-white"></div>
+					<template id="file-card-template">
+						<div class="border border-gray-200 rounded-[3px] p-3 bg-gray-50">
+							<div class="flex items-center justify-between mb-2">
+								<div class="text-sm font-medium">课程文件浏览</div>
+								<button data-role="close" class="text-xs underline">关闭</button>
+							</div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <select data-role="courseSelect" class="flex-1 h-9 px-2 py-1 border border-gray-300 rounded-[3px] bg-white text-black focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800">
+                            <option value="" disabled selected>选择一门已选课程</option>
+                        </select>
+                        <button data-role="load" class="h-9 px-3 rounded-[3px] bg-black text-white text-xs">加载</button>
+                    </div>
+							<div data-role="tree" class="text-sm max-h-[45vh] overflow-y-auto"></div>
+						</div>
+					</template>
 					<form id="form" class="mt-2 flex items-center gap-2">
 						<input id="question" type="text" placeholder="输入你的问题，例如：最近有什么作业要交？" required class="flex-1 h-11 px-3 py-2 border border-gray-300 rounded-[3px] bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-neutral-800 focus:border-neutral-800" />
 						<button type="submit" class="px-3 py-2 rounded-[3px] bg-black text-white text-sm transition-colors hover:bg-neutral-900">发送</button>
@@ -129,7 +158,7 @@
 	</main>
 
 	<script>
-		const chat = document.getElementById('chat');
+        const chat = document.getElementById('chat');
 		const form = document.getElementById('form');
 		const tokenInput = document.getElementById('token');
 		const qInput = document.getElementById('question');
@@ -140,17 +169,54 @@
 		const toolSelect = document.getElementById('toolSelect');
 		const toolCourseInput = document.getElementById('toolCourse');
 		const runToolBtn = document.getElementById('runToolBtn');
+        const courseIdInput = document.getElementById('courseIdInput');
+        const loadTreeBtn = document.getElementById('loadTreeBtn');
+        const fileTreeEl = document.getElementById('fileTree');
+        const fileBrowserSection = document.getElementById('fileBrowserSection');
+        const HISTORY_MAX_TURNS = 10; // 最多保留最近 N 轮（user/assistant 一问一答计 2 条）
+        let chatHistory = [];
+        const DEBUG_MODE = true;
 
-		// 恢复 sessionStorage
+        // 恢复 sessionStorage
 		tokenInput.value = sessionStorage.getItem('canvas_token') || '';
 		baseUrlInput.value = sessionStorage.getItem('llm_base_url') || '';
 		llmKeyInput.value = sessionStorage.getItem('llm_api_key') || '';
+        try {
+            const raw = sessionStorage.getItem('chat_history');
+            chatHistory = Array.isArray(JSON.parse(raw || '[]')) ? JSON.parse(raw || '[]') : [];
+        } catch (_) { chatHistory = []; }
 
 		function saveSession() {
 			sessionStorage.setItem('canvas_token', tokenInput.value.trim());
 			sessionStorage.setItem('llm_base_url', baseUrlInput.value.trim());
 			sessionStorage.setItem('llm_api_key', llmKeyInput.value.trim());
 		}
+
+        function saveHistory() {
+            try {
+                sessionStorage.setItem('chat_history', JSON.stringify(chatHistory));
+            } catch (_) {}
+        }
+
+        function pushHistory(role, content) {
+            const r = String(role || '').trim();
+            const c = String(content || '');
+            chatHistory.push({ role: r === 'user' ? 'user' : 'assistant', content: c });
+            // 只保留最近 N 轮（约 2N 条）
+            const maxItems = HISTORY_MAX_TURNS * 2;
+            if (chatHistory.length > maxItems) {
+                chatHistory = chatHistory.slice(chatHistory.length - maxItems);
+            }
+            saveHistory();
+        }
+
+        function debugLog(...args) {
+            try {
+                if (!DEBUG_MODE || !window || !window.console) return;
+                const fn = console.log ? console.log.bind(console) : (console.debug ? console.debug.bind(console) : null);
+                if (fn) fn('[UI]', ...args);
+            } catch (_) {}
+        }
 
 		function appendMsg(role, text) {
 			const row = document.createElement('div');
@@ -168,6 +234,183 @@
 				} else {
 					html = String(text || '');
 				}
+
+        function renderTree(node) {
+            const container = document.createElement('div');
+            container.className = 'space-y-2';
+
+            function createFolder(f) {
+                const wrapper = document.createElement('div');
+                const header = document.createElement('div');
+                header.className = 'flex items-center gap-2 cursor-pointer select-none px-2 py-1 rounded-[3px] hover:bg-gray-100';
+                const icon = document.createElement('span');
+                icon.textContent = '📁';
+                const name = document.createElement('span');
+                name.textContent = f.name || '(未命名文件夹)';
+                const count = document.createElement('span');
+                count.className = 'ml-auto text-xs text-gray-500';
+                const totalFiles = (f.files?.length || 0);
+                const totalFolders = (f.folders?.length || 0);
+                count.textContent = `${totalFolders} 文件夹 · ${totalFiles} 文件`;
+                header.appendChild(icon); header.appendChild(name); header.appendChild(count);
+
+                const children = document.createElement('div');
+                children.className = 'ml-4 mt-1 hidden space-y-1';
+
+                if (Array.isArray(f.folders)) {
+                    f.folders.forEach(sub => children.appendChild(createFolder(sub)));
+                }
+                if (Array.isArray(f.files)) {
+                    f.files.forEach(file => children.appendChild(createFile(file)));
+                }
+
+                header.addEventListener('click', () => {
+                    children.classList.toggle('hidden');
+                });
+
+                wrapper.appendChild(header);
+                wrapper.appendChild(children);
+                return wrapper;
+            }
+
+            function createFile(file) {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-2 px-2 py-1 rounded-[3px] hover:bg-gray-50';
+                const icon = document.createElement('span');
+                icon.textContent = '📄';
+                const name = document.createElement('span');
+                name.textContent = file.display_name || `文件 ${file.id}`;
+                name.className = 'truncate max-w-[60%]';
+                const meta = document.createElement('span');
+                meta.className = 'ml-auto text-xs text-gray-500';
+                meta.textContent = (file.content_type || '') + (file.size ? ` · ${file.size}B` : '');
+                const dl = document.createElement('a');
+                dl.textContent = '下载';
+                dl.className = 'text-sm underline ml-3';
+                dl.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+                dl.target = '_blank';
+                dl.addEventListener('click', (e) => {
+                    // 通过 fetch 附带 Token，服务端将使用 X-Canvas-Token 代理下载
+                    e.preventDefault();
+                    const token = tokenInput.value.trim();
+                    if (!token) { appendMsg('ai', '请先填写 Canvas Token'); return; }
+                    fetch(dl.href, { headers: { 'X-Canvas-Token': token } })
+                        .then(async (resp) => {
+                            if (!resp.ok) {
+                                const msg = await resp.text().catch(() => resp.statusText);
+                                throw new Error(msg || '下载失败');
+                            }
+                            const blob = await resp.blob();
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = (file.display_name || `file_${file.id}`);
+                            document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                        })
+                        .catch(err => appendMsg('ai', '下载失败：' + (err.message || String(err))));
+                });
+                row.appendChild(icon); row.appendChild(name); row.appendChild(meta); row.appendChild(dl);
+                return row;
+            }
+
+            const rootTitle = document.createElement('div');
+            rootTitle.className = 'text-sm text-gray-600';
+            rootTitle.textContent = (node.full_name || node.name || '课程文件');
+            container.appendChild(rootTitle);
+
+            if (Array.isArray(node.folders)) {
+                node.folders.forEach(sub => container.appendChild(createFolder(sub)));
+            }
+            if (Array.isArray(node.files) && node.files.length) {
+                const filesWrap = document.createElement('div');
+                filesWrap.className = 'mt-1';
+                node.files.forEach(f => filesWrap.appendChild(createFile(f)));
+                container.appendChild(filesWrap);
+            }
+            return container;
+        }
+
+        // 在对话中插入文件浏览卡片（挂到 window，避免作用域问题）
+        window.insertFileBrowserCard = function(courseId) {
+            debugLog('insertFileBrowserCard()', { courseId });
+            const tpl = document.getElementById('file-card-template');
+            if (!tpl) return;
+            const node = tpl.content.firstElementChild.cloneNode(true);
+            const treeEl = node.querySelector('[data-role="tree"]');
+            const courseSelect = node.querySelector('[data-role="courseSelect"]');
+            const loadBtn = node.querySelector('[data-role="load"]');
+            const closeBtn = node.querySelector('[data-role="close"]');
+
+            function loadTreeById(cid) {
+                (async () => {
+                    try {
+                        const token = tokenInput.value.trim();
+                        if (!token) { appendMsg('ai', '请先填写 Canvas Token'); return; }
+                        if (!cid) { appendMsg('ai', '请填写有效的课程 ID'); return; }
+                        statusEl.textContent = '加载文件树中…';
+                        treeEl.innerHTML = '';
+                        const url = `/api/courses/${encodeURIComponent(cid)}/file_tree`;
+                        debugLog('fetch file_tree', { url, cid });
+                        const resp = await fetch(url, { headers: { 'X-Canvas-Token': token } });
+                        debugLog('file_tree status', resp.status);
+                        if (!resp.ok) {
+                            const errText = await resp.text().catch(() => resp.statusText);
+                            throw new Error(errText || '请求失败');
+                        }
+                        const data = await resp.json();
+                        debugLog('file_tree payload keys', Object.keys(data || {}));
+                        const root = (data && data.root) ? data.root : null;
+                        if (!root) { treeEl.textContent = '未获取到文件树'; return; }
+                        treeEl.appendChild(renderTree(root));
+                    } catch (e) {
+                        appendMsg('ai', '加载文件树失败：' + (e.message || String(e)));
+                        debugLog('loadTreeById error', e);
+                    } finally {
+                        statusEl.textContent = '';
+                    }
+                })();
+            }
+
+            // 先载入用户已选课程填充下拉
+            (async () => {
+                try {
+                    const token = tokenInput.value.trim();
+                    if (!token) return;
+                    const resp = await fetch('/api/courses', { headers: { 'X-Canvas-Token': token } });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        const list = Array.isArray(data.courses) ? data.courses : [];
+                        list.forEach(c => {
+                            const opt = document.createElement('option');
+                            opt.value = String(c.id);
+                            opt.textContent = c.course_code ? `${c.course_code} ${c.name}` : c.name;
+                            courseSelect.appendChild(opt);
+                        });
+                        // 如果工具指定了 courseId，预选并加载
+                        if (courseId) {
+                            courseSelect.value = String(courseId);
+                            loadTreeById(Number(courseId));
+                        }
+                    }
+                } catch (_) {}
+            })();
+
+            loadBtn.addEventListener('click', () => {
+                const cid = Number(courseSelect.value || '');
+                loadTreeById(cid);
+            });
+            closeBtn.addEventListener('click', () => { node.remove(); });
+
+            // 作为 AI 消息插入
+            const row = document.createElement('div');
+            row.className = 'flex justify-start';
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble bubble-ai inline-block px-3 py-2 rounded-[3px] max-w-[75%] text-sm leading-6 bg-gray-100 text-black';
+            bubble.appendChild(node);
+            row.appendChild(bubble);
+            chat.appendChild(row);
+            chat.scrollTop = chat.scrollHeight;
+        }
 			} catch (_) {
 				html = String(text || '');
 			}
@@ -179,6 +422,152 @@
 			chat.appendChild(row);
 			chat.scrollTop = chat.scrollHeight;
 		}
+
+        // 独立定义文件树渲染函数，供“加载文件树”按钮使用
+        function renderTree(node) {
+            const container = document.createElement('div');
+            container.className = 'space-y-2';
+
+            function createFolder(f) {
+                const wrapper = document.createElement('div');
+                const header = document.createElement('div');
+                header.className = 'flex items-center gap-2 cursor-pointer select-none px-2 py-1 rounded-[3px] hover:bg-gray-100';
+                const icon = document.createElement('span');
+                icon.textContent = '📁';
+                const name = document.createElement('span');
+                name.textContent = f.name || '(未命名文件夹)';
+                const count = document.createElement('span');
+                count.className = 'ml-auto text-xs text-gray-500';
+                const totalFiles = (f.files?.length || 0);
+                const totalFolders = (f.folders?.length || 0);
+                count.textContent = `${totalFolders} 文件夹 · ${totalFiles} 文件`;
+                header.appendChild(icon); header.appendChild(name); header.appendChild(count);
+
+                const children = document.createElement('div');
+                children.className = 'ml-4 mt-1 hidden space-y-1';
+
+                if (Array.isArray(f.folders)) {
+                    f.folders.forEach(sub => children.appendChild(createFolder(sub)));
+                }
+                if (Array.isArray(f.files)) {
+                    f.files.forEach(file => children.appendChild(createFile(file)));
+                }
+
+                header.addEventListener('click', () => {
+                    children.classList.toggle('hidden');
+                });
+
+                wrapper.appendChild(header);
+                wrapper.appendChild(children);
+                return wrapper;
+            }
+
+            function createFile(file) {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-2 px-2 py-1 rounded-[3px] hover:bg-gray-50';
+                const icon = document.createElement('span');
+                icon.textContent = '📄';
+                const name = document.createElement('span');
+                name.textContent = file.display_name || `文件 ${file.id}`;
+                name.className = 'truncate max-w-[60%]';
+                const meta = document.createElement('span');
+                meta.className = 'ml-auto text-xs text-gray-500';
+                meta.textContent = (file.content_type || '') + (file.size ? ` · ${file.size}B` : '');
+                const dl = document.createElement('a');
+                dl.textContent = '下载';
+                dl.className = 'text-sm underline ml-3';
+                dl.href = `/api/files/${encodeURIComponent(file.id)}/download`;
+                dl.target = '_blank';
+                dl.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const token = tokenInput.value.trim();
+                    if (!token) { appendMsg('ai', '请先填写 Canvas Token'); return; }
+                    fetch(dl.href, { headers: { 'X-Canvas-Token': token } })
+                        .then(async (resp) => {
+                            if (!resp.ok) {
+                                const msg = await resp.text().catch(() => resp.statusText);
+                                throw new Error(msg || '下载失败');
+                            }
+                            const blob = await resp.blob();
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = (file.display_name || `file_${file.id}`);
+                            document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                        })
+                        .catch(err => appendMsg('ai', '下载失败：' + (err.message || String(err))));
+                });
+                row.appendChild(icon); row.appendChild(name); row.appendChild(meta); row.appendChild(dl);
+                return row;
+            }
+
+            const rootTitle = document.createElement('div');
+            rootTitle.className = 'text-sm text-gray-600';
+            rootTitle.textContent = (node.full_name || node.name || '课程文件');
+            container.appendChild(rootTitle);
+
+            if (Array.isArray(node.folders)) {
+                node.folders.forEach(sub => container.appendChild(createFolder(sub)));
+            }
+            if (Array.isArray(node.files) && node.files.length) {
+                const filesWrap = document.createElement('div');
+                filesWrap.className = 'mt-1';
+                node.files.forEach(f => filesWrap.appendChild(createFile(f)));
+                container.appendChild(filesWrap);
+            }
+            return container;
+        }
+
+        // 解析 Agent 返回中的 UI 指令占位符，并执行对应动作
+        function handleAgentUI(text) {
+            let cleaned = String(text || '');
+            debugLog('handleAgentUI.input', cleaned);
+            const reOpen = /__UI_FILE_BROWSER_OPEN__(\{[\s\S]*?\})__/g; // 兼容旧指令：侧栏打开
+            const reCard = /__UI_FILE_BROWSER_CARD__(\{[\s\S]*?\})__/g; // 新指令：对话卡片
+            let match;
+            let found = false;
+            while ((match = reCard.exec(cleaned)) !== null) {
+                found = true;
+                const payloadStr = match[1];
+                debugLog('UI CARD directive raw', payloadStr);
+                let payload = null;
+                try {
+                    payload = JSON.parse(payloadStr);
+                    debugLog('UI CARD directive parsed', payload);
+                } catch (e) {
+                    debugLog('UI CARD JSON.parse error', e, payloadStr);
+                }
+                const cid = payload && (payload.courseId ?? payload.course_id);
+                try {
+                    insertFileBrowserCard(cid);
+                } catch (e) {
+                    debugLog('insertFileBrowserCard error', e, cid);
+                }
+            }
+            if (found) cleaned = cleaned.replace(reCard, '').trim();
+
+            // 兼容旧指令：将其也转为对话卡片
+            while ((match = reOpen.exec(cleaned)) !== null) {
+                const payloadStr = match[1];
+                debugLog('UI OPEN directive raw', payloadStr);
+                let payload = null;
+                try {
+                    payload = JSON.parse(payloadStr);
+                    debugLog('UI OPEN directive parsed', payload);
+                } catch (e) {
+                    debugLog('UI OPEN JSON.parse error', e, payloadStr);
+                }
+                const cid = payload && (payload.courseId ?? payload.course_id);
+                try {
+                    insertFileBrowserCard(cid);
+                } catch (e) {
+                    debugLog('insertFileBrowserCard error (compat)', e, cid);
+                }
+                cleaned = cleaned.replace(reOpen, '').trim();
+            }
+            debugLog('handleAgentUI.cleaned', cleaned);
+            return cleaned;
+        }
 
 		checkBtn.addEventListener('click', async () => {
 			try {
@@ -204,17 +593,21 @@
 					const name = (toolCourseInput.value || '').trim();
 					if (name) body['course_name'] = name;
 				}
-				const resp = await fetch('/api/tool_test', {
+                const resp = await fetch('/api/tool_test', {
 					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'X-AGENT-VERBOSE': 'true' },
 					body: JSON.stringify(body)
 				});
+				
 				if (!resp.ok) {
 					const err = await resp.json().catch(() => ({ detail: resp.statusText }));
 					throw new Error(err.detail || '请求失败');
 				}
-				const data = await resp.json();
-				appendMsg('ai', data.result || '（无内容）');
+                const data = await resp.json();
+                debugLog('tool_test.raw', data);
+                const handled = handleAgentUI(data.result || '（无内容）');
+                if (handled) appendMsg('ai', handled);
+                pushHistory('assistant', handled || '');
 			} catch (e) {
 				appendMsg('ai', '工具调用错误：' + (e.message || String(e)));
 			} finally {
@@ -222,9 +615,35 @@
 			}
 		});
 
+		loadTreeBtn.addEventListener('click', async () => {
+			try {
+				const token = tokenInput.value.trim();
+				const cid = Number(courseIdInput.value || '');
+				if (!token) { appendMsg('ai', '请先填写 Canvas Token'); return; }
+				if (!cid) { appendMsg('ai', '请填写有效的课程 ID'); return; }
+				statusEl.textContent = '加载文件树中…';
+				fileTreeEl.innerHTML = '';
+				const resp = await fetch(`/api/courses/${encodeURIComponent(cid)}/file_tree`, {
+					headers: { 'X-Canvas-Token': token }
+				});
+				if (!resp.ok) {
+					const errText = await resp.text().catch(() => resp.statusText);
+					throw new Error(errText || '请求失败');
+				}
+				const data = await resp.json();
+				const root = (data && data.root) ? data.root : null;
+				if (!root) { fileTreeEl.textContent = '未获取到文件树'; return; }
+				fileTreeEl.appendChild(renderTree(root));
+			} catch (e) {
+				appendMsg('ai', '加载文件树失败：' + (e.message || String(e)));
+			} finally {
+				statusEl.textContent = '';
+			}
+		});
+
 		form.addEventListener('submit', async (e) => {
 			e.preventDefault();
-			saveSession();
+            saveSession();
 			const token = tokenInput.value.trim();
 			const message = qInput.value.trim();
 			if (!message) { return; }
@@ -234,26 +653,30 @@
 			}
 
 			appendMsg('user', message);
+            pushHistory('user', message);
 			qInput.value = '';
 			statusEl.textContent = '思考中…';
 
 			try {
-				const headers = { 'Content-Type': 'application/json' };
+                const headers = { 'Content-Type': 'application/json', 'X-AGENT-VERBOSE': 'true' };
 				// 可选：将 LLM 配置透传给后端（示例性做法，用于快速演示；生产应配置在服务器）
 				if (baseUrlInput.value) headers['X-LLM-BASE'] = baseUrlInput.value;
 				if (llmKeyInput.value) headers['X-LLM-KEY'] = llmKeyInput.value;
 
-				const resp = await fetch('/api/chat', {
+                const resp = await fetch('/api/chat', {
 					method: 'POST',
 					headers,
-					body: JSON.stringify({ message, canvas_token: token })
+                    body: JSON.stringify({ message, canvas_token: token, history: chatHistory })
 				});
 				if (!resp.ok) {
 					const err = await resp.json().catch(() => ({ detail: resp.statusText }));
 					throw new Error(err.detail || '请求失败');
 				}
-				const data = await resp.json();
-				appendMsg('ai', data.answer || '（无内容）');
+                const data = await resp.json();
+                debugLog('chat.raw', data);
+                const handled = handleAgentUI(data.answer || '（无内容）');
+                if (handled) appendMsg('ai', handled);
+                pushHistory('assistant', handled || '');
 			} catch (err) {
 				appendMsg('ai', '错误：' + (err.message || String(err)));
 			} finally {

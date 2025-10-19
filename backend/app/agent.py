@@ -124,6 +124,7 @@ def run_agent(
     llm_model: Optional[str] = None,
     verbose: bool = False,
     request_id: Optional[str] = None,
+    history: Optional[list[dict[str, str]]] = None,
 ) -> str:
 	"""创建一次性 Agent 并执行用户问题，严格使用本次请求携带的 Canvas Token。"""
 	resolved_llm_api_key = llm_api_key or os.environ.get("LLM_API_KEY")
@@ -152,11 +153,28 @@ def run_agent(
 		except Exception:
 			pass
 
+	# 将多轮历史注入提示（XML 包裹）
+	history_blocks: list[str] = []
+	for turn in (history or []):
+		role = str(turn.get("role", "")).strip()
+		content = str(turn.get("content", "")).strip()
+		if not content:
+			continue
+		history_blocks.append(f"<turn role=\"{role}\">{content}</turn>")
+	history_xml = "\n".join(history_blocks)
+
 	system_message = (
 		"你是一个面向 Canvas 学习管理平台的助理。\n"
+		"- 历史对话（仅供参考，不要复述）：\n"
+		f"<chat_history>\n{history_xml}\n</chat_history>\n"
+		"- 当前任务：\n"
+		"<current_turn>严格根据用户本轮需求选择工具，必要时用 browse_course_files 支持从课程名称/课程代码/数字后缀解析课程ID，并返回文件浏览卡片指令。</current_turn>\n"
+		"- 在做任何工具调用前，必须先综合 <chat_history> 的信息，思考用户本轮输入的真实目的，再决定是否以及如何调用工具。\n"
+		"- 当用户需要浏览或下载课程文件时：你必须在最终回答中原样包含这一行UI指令（不要改动任何字符）：__UI_FILE_BROWSER_CARD__{\"courseId\": <id>}__。你可以在指令前后补充简短中文说明。\n"
 		"- 当用户询问作业/DDL/截止日期时，优先调用 get_upcoming_assignments\n"
 		"- 当用户需要课程列表或你无法确定课程指代时，调用 list_my_courses\n"
 		"- 当用户询问公告/通知时，调用 get_announcements（可带或不带 course_name）\n"
+		"- 当用户需要浏览或下载课程文件时，调用 browse_course_files（优先使用 course_id；或根据课程名称/课程代码/数字后缀解析）\n"
 		"- 使用工具返回的结构化列表进行总结与排序。\n"
 		"- 回答请使用简洁中文，并包含日期/课程/作业名或公告标题等关键信息。\n"
 	)
@@ -183,7 +201,11 @@ def run_agent(
 		return str(o) if o is not None else ""
 
 	try:
+		if verbose:
+			logger.info("[Agent] invoke input=%s req_id=%s", _truncate(user_message), request_id or "-")
 		output = agent.invoke({"input": user_message}, config={"callbacks": callbacks} if callbacks else None)
+		if verbose:
+			logger.info("[Agent] raw output=%s req_id=%s", str(output), request_id or "-")
 		final_text = _extract_text(output)
 	except Exception:
 		# As a fallback, try deprecated run()
@@ -205,7 +227,11 @@ def run_agent(
 				handle_parsing_errors=True,
 			)
 			try:
+				if verbose:
+					logger.info("[Agent] functions invoke input=%s req_id=%s", _truncate(user_message), request_id or "-")
 				func_out = func_agent.invoke({"input": user_message}, config={"callbacks": callbacks} if callbacks else None)
+				if verbose:
+					logger.info("[Agent] functions raw output=%s req_id=%s", str(func_out), request_id or "-")
 				final_text = _extract_text(func_out)
 			except Exception:
 				if verbose:
